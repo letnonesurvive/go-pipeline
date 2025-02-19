@@ -3,6 +3,7 @@ package main
 import (
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const bufLen = 100
@@ -50,18 +51,25 @@ func ExecutePipeline(freeFlowJobs ...job) {
 
 	tmp := make([]interface{}, 0, bufLen)
 
+	wg := sync.WaitGroup{}
 	for _, job := range freeFlowJobs {
 		in := make(chan interface{}, bufLen)
 		out := make(chan interface{}, bufLen)
+
 		for _, value := range tmp {
 			in <- value
 		}
 		tmp = tmp[:0] // clear the slice
-
 		close(in)
-		job(in, out)
-		close(out)
 
+		wg.Add(1)
+		go func() {
+			job(in, out)
+			wg.Done()
+		}()
+		wg.Wait()
+
+		close(out)
 		for value := range out {
 			tmp = append(tmp, value)
 		}
