@@ -2,19 +2,48 @@ package main
 
 import (
 	"strconv"
+	"strings"
 )
 
 const bufLen = 100
 
 func SingleHash(in, out chan interface{}) {
-	dataRaw := (<-in).(int)
-	data := strconv.Itoa(dataRaw)
 
-	crc32First := DataSignerCrc32(data)
-	md5 := DataSignerMd5(data)
-	crc32Second := DataSignerCrc32(md5)
+	for value := range in {
+		data := strconv.Itoa(value.(int))
 
-	out <- crc32First + "~" + crc32Second
+		crc32First := DataSignerCrc32(data)
+		md5 := DataSignerMd5(data)
+		crc32Second := DataSignerCrc32(md5)
+
+		out <- crc32First + "~" + crc32Second
+	}
+}
+
+func MultiHash(in, out chan interface{}) {
+
+	for value := range in {
+		data := value.(string)
+		var res string
+		for i := 0; i < 6; i++ {
+			res += DataSignerCrc32(strconv.Itoa(i) + data)
+		}
+		out <- res
+	}
+}
+
+func CombineResults(in, out chan interface{}) {
+
+	var res string
+	for value := range in {
+		hashes := strings.Split(res, "_")
+		if value.(string) <= hashes[0] || len(hashes[0]) == 0 {
+			res = value.(string) + "_" + res
+		} else if value.(string) >= hashes[len(hashes)-1] {
+			res += "_" + value.(string)
+		}
+	}
+	out <- res
 }
 
 func ExecutePipeline(freeFlowJobs ...job) {
