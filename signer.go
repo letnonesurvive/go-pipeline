@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,7 +48,7 @@ func CombineResults(in, out chan interface{}) {
 	out <- res
 }
 
-func ExecutePipeline(freeFlowJobs ...job) {
+func ExecutePipeline1(freeFlowJobs ...job) {
 
 	tmp := make([]interface{}, 0, bufLen)
 
@@ -73,6 +74,35 @@ func ExecutePipeline(freeFlowJobs ...job) {
 		for value := range out {
 			tmp = append(tmp, value)
 		}
+	}
+}
+
+func ExecutePipeline(freeFlowJobs ...job) {
+
+	wg := sync.WaitGroup{}
+
+	in := make(chan interface{}, bufLen)
+	out := make(chan interface{}, bufLen)
+
+	for _, job := range freeFlowJobs {
+
+		close(out)
+		go func() {
+			for value := range out {
+				fmt.Println("Received ", value)
+				in <- value
+			}
+			close(in)
+		}()
+
+		wg.Add(1)
+		go func() {
+			job(in, out)
+			in = make(chan interface{}, bufLen)
+			defer wg.Done()
+		}()
+		wg.Wait()
+
 	}
 }
 
