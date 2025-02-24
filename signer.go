@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,7 +48,7 @@ func CombineResults(in, out chan interface{}) {
 	out <- res
 }
 
-func ExecutePipeline1(freeFlowJobs ...job) {
+func ExecutePipeline1(freeFlowJobs ...job) { //works with accumulating data, not free flow
 
 	tmp := make([]interface{}, 0, bufLen)
 
@@ -77,33 +77,46 @@ func ExecutePipeline1(freeFlowJobs ...job) {
 	}
 }
 
+func worker(id int, ins, outs []chan interface{}, wg *sync.WaitGroup) {
+
+	defer wg.Done()
+	if (id + 1) == len(ins) {
+		return
+	}
+	for value := range outs[id] {
+		ins[id+1] <- value
+		runtime.Gosched()
+	}
+	close(ins[id+1])
+}
+
+func RunJob(job job, in, out chan interface{}, wg *sync.WaitGroup) {
+	defer wg.Done()
+	job(in, out)
+	close(out)
+}
+
 func ExecutePipeline(freeFlowJobs ...job) {
 
 	wg := sync.WaitGroup{}
+	numWorkers := len(freeFlowJobs)
 
-	in := make(chan interface{}, bufLen)
-	out := make(chan interface{}, bufLen)
+	ins := make([]chan interface{}, numWorkers)
+	outs := make([]chan interface{}, numWorkers)
 
-	for _, job := range freeFlowJobs {
-
-		close(out)
-		go func() {
-			for value := range out {
-				fmt.Println("Received ", value)
-				in <- value
-			}
-			close(in)
-		}()
-
+	for i := 0; i < numWorkers; i++ {
+		ins[i] = make(chan interface{}, 100)
+		outs[i] = make(chan interface{}, 100)
 		wg.Add(1)
-		go func() {
-			job(in, out)
-			in = make(chan interface{}, bufLen)
-			defer wg.Done()
-		}()
-		wg.Wait()
-
+		go worker(i, ins, outs, &wg)
 	}
+
+	for i, job := range freeFlowJobs {
+		wg.Add(1)
+		go RunJob(job, ins[i], outs[i], &wg)
+	}
+
+	wg.Wait()
 }
 
 func main() {

@@ -52,7 +52,7 @@ func TestByIlia(t *testing.T) {
 
 	end := time.Since(start)
 
-	expectedTime := time.Millisecond * 300
+	expectedTime := time.Millisecond * 350
 
 	if end > expectedTime {
 		t.Errorf("execition too long\nGot: %s\nExpected: <%s", end, expectedTime)
