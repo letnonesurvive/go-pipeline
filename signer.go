@@ -3,7 +3,6 @@ package main
 import (
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 )
 
@@ -14,21 +13,41 @@ func SingleHash(in, out chan interface{}) {
 	for value := range in {
 		data := strconv.Itoa(value.(int))
 
-		crc32First := DataSignerCrc32(data)
-		md5 := DataSignerMd5(data)
-		crc32Second := DataSignerCrc32(md5)
+		crc32First := make(chan string)
+		crc32Second := make(chan string)
+		go func() {
+			crc32First <- DataSignerCrc32(data)
+		}()
 
-		out <- crc32First + "~" + crc32Second
+		go func() {
+			md5 := DataSignerMd5(data)
+			crc32Second <- DataSignerCrc32(md5)
+		}()
+
+		out <- <-crc32First + "~" + <-crc32Second
 	}
 }
 
 func MultiHash(in, out chan interface{}) {
 
+	hashNumbers := 6
 	for value := range in {
 		data := value.(string)
+		results := make([]string, hashNumbers)
+
+		wg := sync.WaitGroup{}
+		for i := 0; i < hashNumbers; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				results[i] = DataSignerCrc32(strconv.Itoa(i) + data)
+			}(i)
+		}
+		wg.Wait()
+
 		var res string
-		for i := 0; i < 6; i++ {
-			res += DataSignerCrc32(strconv.Itoa(i) + data)
+		for _, value := range results {
+			res += value
 		}
 		out <- res
 	}
@@ -37,14 +56,14 @@ func MultiHash(in, out chan interface{}) {
 func CombineResults(in, out chan interface{}) {
 
 	var res string
-	for value := range in {
-		hashes := strings.Split(res, "_")
-		if value.(string) <= hashes[0] || len(hashes[0]) == 0 {
-			res = value.(string) + "_" + res
-		} else if value.(string) >= hashes[len(hashes)-1] {
-			res += "_" + value.(string)
-		}
-	}
+	// for value := range in {
+	// 	hashes := strings.Split(res, "_")
+	// 	if value.(string) <= hashes[0] || len(hashes[0]) == 0 {
+	// 		res = value.(string) + "_" + res
+	// 	} else if value.(string) >= hashes[len(hashes)-1] {
+	// 		res += "_" + value.(string)
+	// 	}
+	// }
 	out <- res
 }
 
@@ -90,14 +109,14 @@ func worker(id int, ins, outs []chan interface{}, wg *sync.WaitGroup) {
 	close(ins[id+1])
 }
 
-func RunJob(job job, in, out chan interface{}, wg *sync.WaitGroup) {
+func runJob(job job, in, out chan interface{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	job(in, out)
 	close(out)
 }
 
 func ExecutePipeline(freeFlowJobs ...job) {
-
+	//runtime.GOMAXPROCS(0)
 	wg := sync.WaitGroup{}
 	numWorkers := len(freeFlowJobs)
 
@@ -105,15 +124,15 @@ func ExecutePipeline(freeFlowJobs ...job) {
 	outs := make([]chan interface{}, numWorkers)
 
 	for i := 0; i < numWorkers; i++ {
-		ins[i] = make(chan interface{}, 100)
-		outs[i] = make(chan interface{}, 100)
+		ins[i] = make(chan interface{}, bufLen)
+		outs[i] = make(chan interface{}, bufLen)
 		wg.Add(1)
 		go worker(i, ins, outs, &wg)
 	}
 
 	for i, job := range freeFlowJobs {
 		wg.Add(1)
-		go RunJob(job, ins[i], outs[i], &wg)
+		go runJob(job, ins[i], outs[i], &wg)
 	}
 
 	wg.Wait()
