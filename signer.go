@@ -2,6 +2,7 @@ package main
 
 import (
 	"runtime"
+	"sort"
 	"strconv"
 	"sync"
 )
@@ -10,27 +11,37 @@ const bufLen = 100
 
 func SingleHash(in, out chan interface{}) {
 
+	wg := sync.WaitGroup{}
+
 	for value := range in {
 		data := strconv.Itoa(value.(int))
 
 		crc32First := make(chan string)
 		crc32Second := make(chan string)
+
 		go func() {
 			crc32First <- DataSignerCrc32(data)
 		}()
 
-		go func() {
-			md5 := DataSignerMd5(data)
+		md5 := DataSignerMd5(data)
+		go func(md5 string) {
 			crc32Second <- DataSignerCrc32(md5)
-		}()
+		}(md5)
 
-		out <- <-crc32First + "~" + <-crc32Second
+		wg.Add(1)
+		go func(crc32First, crc32Second chan string, wg *sync.WaitGroup) {
+			defer wg.Done()
+			result := <-crc32First + "~" + <-crc32Second
+			out <- result
+		}(crc32First, crc32Second, &wg)
 	}
+	wg.Wait()
 }
 
 func MultiHash(in, out chan interface{}) {
 
 	hashNumbers := 6
+	wgForMultiHash := sync.WaitGroup{}
 	for value := range in {
 		data := value.(string)
 		results := make([]string, hashNumbers)
@@ -38,32 +49,42 @@ func MultiHash(in, out chan interface{}) {
 		wg := sync.WaitGroup{}
 		for i := 0; i < hashNumbers; i++ {
 			wg.Add(1)
-			go func(i int) {
+			go func(i int, wg *sync.WaitGroup) {
 				defer wg.Done()
 				results[i] = DataSignerCrc32(strconv.Itoa(i) + data)
-			}(i)
+			}(i, &wg)
 		}
-		wg.Wait()
 
-		var res string
-		for _, value := range results {
-			res += value
-		}
-		out <- res
+		wgForMultiHash.Add(1)
+		go func(out chan interface{}, wg, wgForMultiHash *sync.WaitGroup) {
+			defer wgForMultiHash.Done()
+			wg.Wait()
+			var res string
+			for _, value := range results {
+				res += value
+			}
+			out <- res
+		}(out, &wg, &wgForMultiHash)
 	}
+	wgForMultiHash.Wait()
 }
 
 func CombineResults(in, out chan interface{}) {
 
+	var results []string
+	for value := range in {
+		results = append(results, value.(string))
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i] < results[j]
+	})
 	var res string
-	// for value := range in {
-	// 	hashes := strings.Split(res, "_")
-	// 	if value.(string) <= hashes[0] || len(hashes[0]) == 0 {
-	// 		res = value.(string) + "_" + res
-	// 	} else if value.(string) >= hashes[len(hashes)-1] {
-	// 		res += "_" + value.(string)
-	// 	}
-	// }
+	for i, value := range results {
+		res += value
+		if i != len(results)-1 {
+			res += "_"
+		}
+	}
 	out <- res
 }
 
@@ -96,7 +117,7 @@ func ExecutePipeline1(freeFlowJobs ...job) { //works with accumulating data, not
 	}
 }
 
-func worker(id int, ins, outs []chan interface{}, wg *sync.WaitGroup) {
+func pipelineWorker(id int, ins, outs []chan interface{}, wg *sync.WaitGroup) {
 
 	defer wg.Done()
 	if (id + 1) == len(ins) {
@@ -116,7 +137,6 @@ func runJob(job job, in, out chan interface{}, wg *sync.WaitGroup) {
 }
 
 func ExecutePipeline(freeFlowJobs ...job) {
-	//runtime.GOMAXPROCS(0)
 	wg := sync.WaitGroup{}
 	numWorkers := len(freeFlowJobs)
 
@@ -127,7 +147,7 @@ func ExecutePipeline(freeFlowJobs ...job) {
 		ins[i] = make(chan interface{}, bufLen)
 		outs[i] = make(chan interface{}, bufLen)
 		wg.Add(1)
-		go worker(i, ins, outs, &wg)
+		go pipelineWorker(i, ins, outs, &wg)
 	}
 
 	for i, job := range freeFlowJobs {
